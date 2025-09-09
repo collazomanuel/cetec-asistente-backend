@@ -1,5 +1,166 @@
 
-# CETEC Asistente
+# CETEC Assistant API
+
+A FastAPI-based backend for a student chat system with document ingestion capabilities, routing through A2A servers and providing a teacher-facing ingestion UI.
+
+## Features
+
+- **Student Chat System**: Conversational interface for students to ask questions
+- **Document Management**: Upload, manage, and track documents for different subjects
+- **Vector Store Integration**: Automatic document ingestion into vector collections
+- **A2A Server Routing**: Dynamic routing to appropriate AI/ML servers based on subject
+- **Teacher Dashboard**: Interface for teachers to manage subjects and documents
+- **Admin Panel**: Administrative controls for system configuration
+
+## Architecture
+
+The API is built with FastAPI and follows a modular architecture:
+
+```
+app/
+├── core/           # Core functionality (config, auth, database)
+├── models/         # Pydantic models for request/response schemas
+├── routers/        # FastAPI route handlers organized by domain
+├── services/       # Business logic layer
+└── main.py         # FastAPI application factory
+```
+
+## API Endpoints
+
+### Meta
+- `GET /api/v1/healthz` - Health check
+- `GET /api/v1/readyz` - Readiness check
+
+### Authentication
+- `GET /api/v1/me` - Get current user info
+
+### Subjects
+- `GET /api/v1/subjects` - List subjects
+- `POST /api/v1/subjects` - Create subject
+- `GET /api/v1/subjects/{slug}` - Get subject details
+- `PATCH /api/v1/subjects/{slug}` - Update subject
+- `DELETE /api/v1/subjects/{slug}` - Delete subject
+
+### Documents
+- `GET /api/v1/subjects/{slug}/documents` - List documents
+- `POST /api/v1/subjects/{slug}/uploads/presign` - Get presigned upload URLs
+- `POST /api/v1/subjects/{slug}/uploads/complete` - Complete uploads
+- `GET /api/v1/subjects/{slug}/documents/{id}` - Get document
+- `DELETE /api/v1/subjects/{slug}/documents/{id}` - Delete document
+
+### Ingestion
+- `POST /api/v1/subjects/{slug}/ingestions` - Start ingestion job
+- `GET /api/v1/subjects/{slug}/ingestions` - List ingestion jobs
+- `GET /api/v1/ingestions/{id}` - Get ingestion job status
+- `POST /api/v1/ingestions/{id}/cancel` - Cancel ingestion job
+
+### Chat
+- `POST /api/v1/conversations` - Create conversation
+- `GET /api/v1/conversations` - List conversations
+- `GET /api/v1/conversations/{id}` - Get conversation
+- `DELETE /api/v1/conversations/{id}` - Delete conversation
+- `POST /api/v1/conversations/{id}/messages` - Send message
+- `GET /api/v1/conversations/{id}/messages` - Get message history
+- `POST /api/v1/conversations/{id}/messages/stream` - Stream message response
+
+### A2A & Routing
+- `GET /api/v1/routing/policy` - Get routing policy
+- `PATCH /api/v1/routing/policy` - Update routing policy
+- `GET /api/v1/a2a/servers` - List A2A servers
+- `POST /api/v1/a2a/servers` - Register A2A server
+- `GET /api/v1/a2a/servers/{id}/health` - Check server health
+
+### Webhooks
+- `POST /api/v1/webhooks/s3` - S3 event notifications
+- `POST /api/v1/webhooks/a2a/{id}/callback` - A2A server callbacks
+
+## Setup
+
+1. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Configure environment**:
+   ```bash
+   cp env.example .env
+   # Edit .env with your configuration
+   ```
+
+3. **Run the application**:
+   ```bash
+   python main.py
+   ```
+
+   Or with uvicorn directly:
+   ```bash
+   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+   ```
+
+## Configuration
+
+Key environment variables:
+
+- `MONGODB_URI`: MongoDB connection string
+- `JWT_SECRET_KEY`: Secret key for JWT tokens
+- `GOOGLE_CLIENT_ID`: Google OAuth client ID
+- `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`: AWS credentials for S3
+- `S3_BUCKET`: S3 bucket for document storage
+- `FRONTEND_URL`: Frontend application URL for CORS
+
+## Development
+
+1. **API Documentation**: Available at `/api/v1/docs` when running
+2. **Testing**: Run tests with `pytest tests/`
+3. **Database**: MongoDB with collections for subjects, documents, conversations, etc.
+4. **Authentication**: JWT-based with Google OAuth support
+
+## Project Structure
+
+```
+cetec-asistente-backend/
+├── app/
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── auth.py          # Authentication logic
+│   │   ├── config.py        # Configuration settings
+│   │   └── database.py      # Database connection
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── auth.py          # User models
+│   │   ├── subjects.py      # Subject models
+│   │   ├── documents.py     # Document models
+│   │   ├── ingestion.py     # Ingestion models
+│   │   ├── chat.py          # Chat models
+│   │   └── a2a.py           # A2A server models
+│   ├── routers/
+│   │   ├── __init__.py
+│   │   ├── meta.py          # Health checks
+│   │   ├── auth.py          # Authentication endpoints
+│   │   ├── subjects.py      # Subject management
+│   │   ├── documents.py     # Document operations
+│   │   ├── ingestion.py     # Ingestion jobs
+│   │   ├── chat.py          # Chat functionality
+│   │   ├── a2a.py           # A2A server management
+│   │   └── webhooks.py      # Webhook handlers
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── subject_service.py
+│   │   ├── document_service.py
+│   │   ├── ingestion_service.py
+│   │   ├── chat_service.py
+│   │   └── a2a_service.py
+│   └── main.py              # FastAPI app factory
+├── tests/
+│   ├── __init__.py
+│   └── test_api.py          # Basic API tests
+├── docs/
+│   └── apidesign.yaml       # OpenAPI specification
+├── main.py                  # Application entry point
+├── requirements.txt         # Python dependencies
+├── env.example             # Environment variables template
+└── README.md               # This file
+```
 
 Este es el back-end del CETEC Asistente construido en Python utilizando el framework web FastAPI. Está diseñado para el uso de los alumnos de la Facultad de Ingeniería de la Universidad de Buenos Aires. Este documento detalla las instrucciones para su configuración, ejecución y uso.
 
