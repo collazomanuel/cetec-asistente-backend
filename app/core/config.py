@@ -23,7 +23,7 @@ class Settings:
     
     # S3 Configuration
     AWS_ACCESS_KEY_ID: str = config('AWS_ACCESS_KEY_ID', default='')
-    AWS_SECRET_ACCESS_KEY: str = config('AWS_SECRET_ACCESS_KEY', default='')
+    AWS_SECRET_KEY: str = config('AWS_SECRET_KEY', default='')
     AWS_REGION: str = config('AWS_REGION', default='us-east-1')
     S3_BUCKET: str = config('S3_BUCKET', default='cetec-documents')
     

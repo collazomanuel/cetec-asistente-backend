@@ -2,20 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 from app.core.auth import get_current_user, get_current_teacher_or_admin, get_current_admin
 from app.models.auth import User
-from app.models.subjects import Subject, SubjectCreate, SubjectUpdate, SubjectStats
+from app.models.subjects import Subject, SubjectCreate, SubjectUpdate
 from app.services.subject_service import SubjectService
 from app.core.database import get_database
 
 router = APIRouter()
-
-@router.get("/subjects", response_model=List[Subject], tags=["Subjects"])
-async def list_subjects(
-    current_user: User = Depends(get_current_user),
-    db=Depends(get_database)
-):
-    """List subjects visible to caller"""
-    subject_service = SubjectService(db)
-    return await subject_service.get_subjects_for_user(current_user)
 
 @router.post("/subjects", response_model=Subject, status_code=status.HTTP_201_CREATED, tags=["Subjects"])
 async def create_subject(
@@ -26,6 +17,15 @@ async def create_subject(
     """Create subject (admin/teacher)"""
     subject_service = SubjectService(db)
     return await subject_service.create_subject(subject_data, current_user)
+
+@router.get("/subjects", response_model=List[Subject], tags=["Subjects"])
+async def list_subjects(
+    current_user: User = Depends(get_current_user),
+    db=Depends(get_database)
+):
+    """List subjects visible to caller"""
+    subject_service = SubjectService(db)
+    return await subject_service.get_subjects_for_user(current_user)
 
 @router.get("/subjects/{subject_slug}", response_model=Subject, tags=["Subjects"])
 async def get_subject(

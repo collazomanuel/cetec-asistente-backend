@@ -55,24 +55,24 @@ auth_service = AuthService()
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> User:
     """
-    Get current user from JWT token
+    Get current user from Google ID token (sent as Bearer token)
     """
     token = credentials.credentials
-    payload = auth_service.verify_token(token)
-    
-    user_id: str = payload.get("sub")
-    if user_id is None:
+    # Verify Google ID token directly; no API-issued JWT
+    idinfo = auth_service.verify_google_token(token)
+
+    user_id: str = idinfo.get("sub") or idinfo.get("email")
+    if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials"
         )
-    
-    # In a real application, you would fetch the user from the database
-    # For now, we'll create a user from the token payload
+
+    # Build user from Google claims; adjust to fetch roles if you persist them
     user = User(
         id=user_id,
-        email=payload.get("email", ""),
-        roles=payload.get("roles", ["student"])
+        email=idinfo.get("email", ""),
+        roles=["admin"]
     )
     return user
 

@@ -104,7 +104,7 @@ Key environment variables:
 - `MONGODB_URI`: MongoDB connection string
 - `JWT_SECRET_KEY`: Secret key for JWT tokens
 - `GOOGLE_CLIENT_ID`: Google OAuth client ID
-- `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`: AWS credentials for S3
+- `AWS_ACCESS_KEY_ID`/`AWS_SECRET_KEY`: AWS credentials for S3
 - `S3_BUCKET`: S3 bucket for document storage
 - `FRONTEND_URL`: Frontend application URL for CORS
 

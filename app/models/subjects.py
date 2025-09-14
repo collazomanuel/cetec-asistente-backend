@@ -1,10 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
 
-class SubjectStats(BaseModel):
-    documents: int
-    vectors: int
-
 class Subject(BaseModel):
     id: str
     name: str
@@ -13,7 +9,6 @@ class Subject(BaseModel):
     s3_prefix: str
     vector_collection: str
     a2a_server_id: str
-    stats: Optional[SubjectStats] = None
 
 class SubjectCreate(BaseModel):
     name: str

@@ -1,43 +1,12 @@
 from typing import List, Optional
 from uuid import uuid4
 from app.models.auth import User
-from app.models.subjects import Subject, SubjectCreate, SubjectUpdate, SubjectStats
+from app.models.subjects import Subject, SubjectCreate, SubjectUpdate
 
 class SubjectService:
     def __init__(self, db):
         self.db = db
         self.collection = db["subjects"]
-
-    async def get_subjects_for_user(self, user: User) -> List[Subject]:
-        """Get subjects visible to the user based on their role"""
-        # Admin can see all subjects
-        # Teachers can see subjects they created or are assigned to
-        # Students can see public subjects or those they're enrolled in
-        
-        query = {}
-        if "admin" not in user.roles:
-            # For now, return all subjects. In a real app, implement proper filtering
-            pass
-            
-        cursor = self.collection.find(query)
-        subjects = []
-        async for doc in cursor:
-            # Calculate stats (mock implementation)
-            stats = SubjectStats(documents=0, vectors=0)
-            
-            subject = Subject(
-                id=str(doc["_id"]),
-                name=doc["name"],
-                slug=doc["slug"],
-                s3_bucket=doc["s3_bucket"],
-                s3_prefix=doc["s3_prefix"],
-                vector_collection=doc["vector_collection"],
-                a2a_server_id=doc["a2a_server_id"],
-                stats=stats
-            )
-            subjects.append(subject)
-        
-        return subjects
 
     async def create_subject(self, subject_data: SubjectCreate, user: User) -> Subject:
         """Create a new subject"""
@@ -54,7 +23,6 @@ class SubjectService:
         
         await self.collection.insert_one(subject_doc)
         
-        stats = SubjectStats(documents=0, vectors=0)
         return Subject(
             id=subject_doc["_id"],
             name=subject_doc["name"],
@@ -63,8 +31,34 @@ class SubjectService:
             s3_prefix=subject_doc["s3_prefix"],
             vector_collection=subject_doc["vector_collection"],
             a2a_server_id=subject_doc["a2a_server_id"],
-            stats=stats
         )
+
+    async def get_subjects_for_user(self, user: User) -> List[Subject]:
+        """Get subjects visible to the user based on their role"""
+        # Admin can see all subjects
+        # Teachers can see subjects they created or are assigned to
+        # Students can see public subjects or those they're enrolled in
+        
+        query = {}
+        if "admin" not in user.roles:
+            # For now, return all subjects. In a real app, implement proper filtering
+            pass
+            
+        cursor = self.collection.find(query)
+        subjects = []
+        async for doc in cursor:            
+            subject = Subject(
+                id=str(doc["_id"]),
+                name=doc["name"],
+                slug=doc["slug"],
+                s3_bucket=doc["s3_bucket"],
+                s3_prefix=doc["s3_prefix"],
+                vector_collection=doc["vector_collection"],
+                a2a_server_id=doc["a2a_server_id"],
+            )
+            subjects.append(subject)
+        
+        return subjects
 
     async def get_subject_by_slug(self, slug: str, user: User) -> Optional[Subject]:
         """Get a subject by slug"""
@@ -72,7 +66,6 @@ class SubjectService:
         if not doc:
             return None
             
-        stats = SubjectStats(documents=0, vectors=0)
         return Subject(
             id=str(doc["_id"]),
             name=doc["name"],
@@ -81,7 +74,6 @@ class SubjectService:
             s3_prefix=doc["s3_prefix"],
             vector_collection=doc["vector_collection"],
             a2a_server_id=doc["a2a_server_id"],
-            stats=stats
         )
 
     async def update_subject(
