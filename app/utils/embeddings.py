@@ -10,6 +10,7 @@ class Embedder:
         self.logger = Logger()
         self.error_handler = ErrorHandler(self.logger)
         try:
+            self.embedding_size = 384  # Dimension for all-MiniLM-L6-v2
             self.logger.debug(f"Loading embedding model: {model_name}")
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
             self.model = AutoModel.from_pretrained(model_name)

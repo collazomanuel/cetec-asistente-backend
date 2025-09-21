@@ -77,7 +77,7 @@ class QdrantStore:
             # Infer vector size if not provided
             if vector_size is None:
                 # Common Embedder patterns: .dim or .embedding_size; fallback to 1536
-                vector_size = getattr(self.embedder, "dim", None) or getattr(self.embedder, "embedding_size", None) or 1536
+                vector_size = getattr(self.embedder, "dim", None) or getattr(self.embedder, "embedding_size", None) or 384
 
             # Create collection if missing
             try:

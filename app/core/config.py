@@ -32,7 +32,13 @@ class Settings:
     
     # Vector Store
     VECTOR_STORE_URL: str = config('VECTOR_STORE_URL', default='http://localhost:6333')
+    # RAG
+    QDRANT_URL: str = config('QDRANT_URL', default='http://localhost:6333')
+    QDRANT_API_KEY: str = config('QDRANT_API_KEY', default='')
+    QDRANT_COLLECTION_NAME: str = config('QDRANT_COLLECTION_NAME', default='documents')
     
+
+
     # Application
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "Student Chat + Ingestion API"

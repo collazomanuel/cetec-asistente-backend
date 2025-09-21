@@ -46,15 +46,17 @@ class IngestionService:
         ingestion_request: IngestionRequest,
         user: User
     ) -> IngestionJob:
-        """Start an ingestion job"""
+        self.logger.info(f"Starting ingestion for subject: {subject_slug} by user: {user.id}")
+        self.logger.debug(f"IngestionRequest: mode={ingestion_request.mode}, doc_ids={ingestion_request.doc_ids}, options={getattr(ingestion_request, 'options', None)}")
         job_id = str(uuid4())
         
         # Count documents to process
         docs_query = {"subject_slug": subject_slug, "status": DocumentStatus.UPLOADED.value}
         if ingestion_request.mode == IngestionMode.SELECTED and ingestion_request.doc_ids:
             docs_query["_id"] = {"$in": ingestion_request.doc_ids}
-        
+        self.logger.debug(f"MongoDB docs_query: {docs_query}")
         docs_total = await self.documents_collection.count_documents(docs_query)
+        self.logger.info(f"Total documents to ingest: {docs_total}")
         
         # Create job record
         job_doc = {
@@ -69,12 +71,15 @@ class IngestionService:
             "created_by": user.id,
             "request": ingestion_request.dict()
         }
-        
+        self.logger.debug(f"Inserting job record: {job_doc}")
         await self.collection.insert_one(job_doc)
+        self.logger.info(f"Ingestion job {job_id} created and queued.")
         
         # Start the actual ingestion process in the background
+        self.logger.info(f"Dispatching background ingestion task for job {job_id}...")
         asyncio.create_task(self._process_ingestion(job_id, subject_slug, docs_query))
         
+        self.logger.info(f"Ingestion job {job_id} started for subject {subject_slug}.")
         return IngestionJob(
             job_id=job_id,
             subject_slug=subject_slug,
@@ -150,15 +155,17 @@ class IngestionService:
         return result.modified_count > 0
 
     async def _process_ingestion(self, job_id: str, subject_slug: str, docs_query: dict):
-        """Process the ingestion job in the background"""
+        self.logger.info(f"[Job {job_id}] Starting background ingestion for subject '{subject_slug}' with query: {docs_query}")
         try:
             # Update job status to running
+            self.logger.info(f"[Job {job_id}] Setting status to RUNNING.")
             await self.collection.update_one(
                 {"_id": job_id},
                 {"$set": {"status": IngestionStatus.RUNNING.value}}
             )
             
             # Initialize Qdrant collection
+            self.logger.info(f"[Job {job_id}] Initializing Qdrant collection...")
             await self.qdrant_store.init_store()
             
             # Get all documents to process
@@ -168,12 +175,14 @@ class IngestionService:
             
             async for doc in cursor:
                 try:
-                    self.logger.info(f"Processing document {doc['_id']}: {doc['filename']}")
+                    self.logger.info(f"[Job {job_id}] Processing document {doc['_id']}: {doc['filename']}")
                     
                     # Download PDF from S3
+                    self.logger.debug(f"[Job {job_id}] Downloading {doc['s3_key']} from S3...")
                     pdf_content = await self._download_pdf_from_s3(doc['s3_key'])
                     
                     if pdf_content:
+                        self.logger.debug(f"[Job {job_id}] PDF downloaded. Extracting text...")
                         # Extract text from PDF
                         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
                             temp_file.write(pdf_content)
@@ -181,10 +190,12 @@ class IngestionService:
                         
                         try:
                             text = self.pdf_handler.read(temp_file_path)
+                            self.logger.debug(f"[Job {job_id}] Extracted text length: {len(text)}")
                             
                             if text.strip():
                                 # Chunk the text
                                 chunks = self.pdf_handler.chunk(text, chunk_size=1000)
+                                self.logger.debug(f"[Job {job_id}] Chunked into {len(chunks)} chunks.")
                                 
                                 # Prepare chunks for Qdrant
                                 qdrant_chunks = []
@@ -198,36 +209,42 @@ class IngestionService:
                                             "page": 1,  # PDF page detection could be improved
                                             "chunk_id": chunk_idx,
                                             "title": doc['filename'],
-                                            "topics": []  # Could be extracted from subject or document
+                                            "topics": []
                                         })
+                                self.logger.debug(f"[Job {job_id}] Prepared {len(qdrant_chunks)} Qdrant chunks.")
                                 
                                 # Upload to Qdrant
                                 if qdrant_chunks:
-                                    await self.qdrant_store.upsert_chunks(qdrant_chunks)
-                                    total_vectors += len(qdrant_chunks)
-                                    
+                                    try: 
+                                        self.logger.info(f"[Job {job_id}] Uploading {len(qdrant_chunks)} chunks to Qdrant...")
+                                        await self.qdrant_store.upsert_chunks(qdrant_chunks)
+                                        total_vectors += len(qdrant_chunks)
+                                    except Exception as e:
+                                        self.logger.error(f"[Job {job_id}] Failed to upload chunks to Qdrant: {str(e)}")
+                                        raise                        
                                     # Update document status to ingested
                                     await self.documents_collection.update_one(
                                         {"_id": doc['_id']},
                                         {"$set": {"status": DocumentStatus.INGESTED.value}}
                                     )
-                                    
-                                    self.logger.info(f"Successfully ingested {len(qdrant_chunks)} chunks from {doc['filename']}")
+                                    self.logger.info(f"[Job {job_id}] Successfully ingested {len(qdrant_chunks)} chunks from {doc['filename']}")
                                 else:
-                                    self.logger.warning(f"No valid chunks extracted from {doc['filename']}")
+                                    self.logger.warning(f"[Job {job_id}] No valid chunks extracted from {doc['filename']}")
                             else:
-                                self.logger.warning(f"No text extracted from {doc['filename']}")
+                                self.logger.warning(f"[Job {job_id}] No text extracted from {doc['filename']}")
                                 
                         finally:
                             # Clean up temp file
                             if os.path.exists(temp_file_path):
                                 os.unlink(temp_file_path)
+                                self.logger.debug(f"[Job {job_id}] Deleted temp file {temp_file_path}")
                     else:
-                        self.logger.error(f"Failed to download {doc['s3_key']} from S3")
+                        self.logger.error(f"[Job {job_id}] Failed to download {doc['s3_key']} from S3")
                         
                     docs_processed += 1
                     
                     # Update job progress
+                    self.logger.info(f"[Job {job_id}] Progress: {docs_processed} docs processed, {total_vectors} vectors so far.")
                     await self.collection.update_one(
                         {"_id": job_id},
                         {"$set": {
@@ -237,7 +254,7 @@ class IngestionService:
                     )
                     
                 except Exception as e:
-                    self.logger.error(f"Error processing document {doc['_id']}: {str(e)}")
+                    self.logger.error(f"[Job {job_id}] Error processing document {doc['_id']}: {str(e)}")
                     # Mark document as failed
                     await self.documents_collection.update_one(
                         {"_id": doc['_id']},
@@ -246,6 +263,7 @@ class IngestionService:
                     docs_processed += 1
             
             # Update job status to completed
+            self.logger.info(f"[Job {job_id}] COMPLETED: {docs_processed} docs, {total_vectors} vectors.")
             await self.collection.update_one(
                 {"_id": job_id},
                 {"$set": {
@@ -255,10 +273,8 @@ class IngestionService:
                 }}
             )
             
-            self.logger.info(f"Ingestion job {job_id} completed: {docs_processed} docs, {total_vectors} vectors")
-            
         except Exception as e:
-            self.logger.error(f"Ingestion job {job_id} failed: {str(e)}")
+            self.logger.error(f"[Job {job_id}] Ingestion job failed: {str(e)}")
             # Update job status to failed
             await self.collection.update_one(
                 {"_id": job_id},

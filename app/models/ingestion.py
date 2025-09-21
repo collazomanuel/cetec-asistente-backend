@@ -21,7 +21,7 @@ class IngestionRequest(BaseModel):
 class IngestionStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
-    SUCCEEDED = "succeeded"
+    COMPLETED = "completed"
     FAILED = "failed"
     CANCELED = "canceled"
 
