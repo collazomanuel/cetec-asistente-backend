@@ -1,15 +1,44 @@
 from typing import List, Optional
 from uuid import uuid4
 from datetime import datetime
+import asyncio
+import tempfile
+import os
+import boto3
 from app.models.auth import User
 from app.models.ingestion import (
     IngestionRequest, IngestionJob, IngestionStatus, IngestionMode
 )
+from app.models.documents import DocumentStatus
+from app.utils.pdf_handler import PDFHandler
+from app.utils.qdrant_client import QdrantStore
+from app.utils.logger import Logger
+from app.core.config import settings
 
 class IngestionService:
     def __init__(self, db):
         self.db = db
         self.collection = db["ingestion_jobs"]
+        self.documents_collection = db["documents"]
+        self.logger = Logger()
+        
+        # Initialize S3 client
+        self.s3_client = boto3.client(
+            's3',
+            aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=settings.AWS_SECRET_KEY,
+            region_name=settings.AWS_REGION
+        )
+        
+        # Initialize PDF handler
+        self.pdf_handler = PDFHandler()
+        
+        # Initialize Qdrant store
+        self.qdrant_store = QdrantStore(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY,
+            collection_name=settings.QDRANT_COLLECTION_NAME or "academia_docs"
+        )
 
     async def start_ingestion(
         self,
@@ -21,12 +50,11 @@ class IngestionService:
         job_id = str(uuid4())
         
         # Count documents to process
-        docs_query = {"subject_slug": subject_slug}
+        docs_query = {"subject_slug": subject_slug, "status": DocumentStatus.UPLOADED.value}
         if ingestion_request.mode == IngestionMode.SELECTED and ingestion_request.doc_ids:
             docs_query["_id"] = {"$in": ingestion_request.doc_ids}
         
-        docs_collection = self.db["documents"]
-        docs_total = await docs_collection.count_documents(docs_query)
+        docs_total = await self.documents_collection.count_documents(docs_query)
         
         # Create job record
         job_doc = {
@@ -44,8 +72,8 @@ class IngestionService:
         
         await self.collection.insert_one(job_doc)
         
-        # In a real implementation, you would queue this job for processing
-        # For now, we'll just return the job
+        # Start the actual ingestion process in the background
+        asyncio.create_task(self._process_ingestion(job_id, subject_slug, docs_query))
         
         return IngestionJob(
             job_id=job_id,
@@ -120,3 +148,143 @@ class IngestionService:
         # In a real implementation, you would also signal the worker to stop
         
         return result.modified_count > 0
+
+    async def _process_ingestion(self, job_id: str, subject_slug: str, docs_query: dict):
+        """Process the ingestion job in the background"""
+        try:
+            # Update job status to running
+            await self.collection.update_one(
+                {"_id": job_id},
+                {"$set": {"status": IngestionStatus.RUNNING.value}}
+            )
+            
+            # Initialize Qdrant collection
+            await self.qdrant_store.init_store()
+            
+            # Get all documents to process
+            cursor = self.documents_collection.find(docs_query)
+            docs_processed = 0
+            total_vectors = 0
+            
+            async for doc in cursor:
+                try:
+                    self.logger.info(f"Processing document {doc['_id']}: {doc['filename']}")
+                    
+                    # Download PDF from S3
+                    pdf_content = await self._download_pdf_from_s3(doc['s3_key'])
+                    
+                    if pdf_content:
+                        # Extract text from PDF
+                        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+                            temp_file.write(pdf_content)
+                            temp_file_path = temp_file.name
+                        
+                        try:
+                            text = self.pdf_handler.read(temp_file_path)
+                            
+                            if text.strip():
+                                # Chunk the text
+                                chunks = self.pdf_handler.chunk(text, chunk_size=1000)
+                                
+                                # Prepare chunks for Qdrant
+                                qdrant_chunks = []
+                                for chunk_idx, chunk_text in enumerate(chunks):
+                                    if chunk_text.strip():
+                                        qdrant_chunks.append({
+                                            "text": chunk_text,
+                                            "subject": self._map_subject_to_category(subject_slug),
+                                            "s3_uri": f"s3://{settings.S3_BUCKET}/{doc['s3_key']}",
+                                            "doc_id": doc['_id'],
+                                            "page": 1,  # PDF page detection could be improved
+                                            "chunk_id": chunk_idx,
+                                            "title": doc['filename'],
+                                            "topics": []  # Could be extracted from subject or document
+                                        })
+                                
+                                # Upload to Qdrant
+                                if qdrant_chunks:
+                                    await self.qdrant_store.upsert_chunks(qdrant_chunks)
+                                    total_vectors += len(qdrant_chunks)
+                                    
+                                    # Update document status to ingested
+                                    await self.documents_collection.update_one(
+                                        {"_id": doc['_id']},
+                                        {"$set": {"status": DocumentStatus.INGESTED.value}}
+                                    )
+                                    
+                                    self.logger.info(f"Successfully ingested {len(qdrant_chunks)} chunks from {doc['filename']}")
+                                else:
+                                    self.logger.warning(f"No valid chunks extracted from {doc['filename']}")
+                            else:
+                                self.logger.warning(f"No text extracted from {doc['filename']}")
+                                
+                        finally:
+                            # Clean up temp file
+                            if os.path.exists(temp_file_path):
+                                os.unlink(temp_file_path)
+                    else:
+                        self.logger.error(f"Failed to download {doc['s3_key']} from S3")
+                        
+                    docs_processed += 1
+                    
+                    # Update job progress
+                    await self.collection.update_one(
+                        {"_id": job_id},
+                        {"$set": {
+                            "docs_done": docs_processed,
+                            "vectors": total_vectors
+                        }}
+                    )
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing document {doc['_id']}: {str(e)}")
+                    # Mark document as failed
+                    await self.documents_collection.update_one(
+                        {"_id": doc['_id']},
+                        {"$set": {"status": DocumentStatus.FAILED.value}}
+                    )
+                    docs_processed += 1
+            
+            # Update job status to completed
+            await self.collection.update_one(
+                {"_id": job_id},
+                {"$set": {
+                    "status": IngestionStatus.COMPLETED.value,
+                    "docs_done": docs_processed,
+                    "vectors": total_vectors
+                }}
+            )
+            
+            self.logger.info(f"Ingestion job {job_id} completed: {docs_processed} docs, {total_vectors} vectors")
+            
+        except Exception as e:
+            self.logger.error(f"Ingestion job {job_id} failed: {str(e)}")
+            # Update job status to failed
+            await self.collection.update_one(
+                {"_id": job_id},
+                {"$set": {"status": IngestionStatus.FAILED.value}}
+            )
+
+    async def _download_pdf_from_s3(self, s3_key: str) -> bytes:
+        """Download PDF content from S3"""
+        try:
+            response = self.s3_client.get_object(Bucket=settings.S3_BUCKET, Key=s3_key)
+            return response['Body'].read()
+        except Exception as e:
+            self.logger.error(f"Failed to download {s3_key} from S3: {str(e)}")
+            return None
+    
+    def _map_subject_to_category(self, subject_slug: str) -> str:
+        """Map subject slug to a standard category for Qdrant filtering"""
+        # Simple mapping - could be more sophisticated
+        slug_lower = subject_slug.lower()
+        if 'math' in slug_lower or 'calculo' in slug_lower or 'algebra' in slug_lower:
+            return "Math"
+        elif 'physic' in slug_lower or 'fisica' in slug_lower:
+            return "Physics"
+        elif 'quimica' in slug_lower or 'chemistry' in slug_lower:
+            return "Chemistry"
+        elif 'circuit' in slug_lower or 'electr' in slug_lower:
+            return "Physics"  # Electrical circuits -> Physics
+        else:
+            return "General"

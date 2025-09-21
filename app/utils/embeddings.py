@@ -2,8 +2,8 @@
 from transformers import AutoTokenizer, AutoModel
 import torch
 from typing import List
-from src.agentic_rag.utils.logger import Logger
-from src.agentic_rag.utils.error_handler import ErrorHandler
+from app.utils.logger import Logger
+from app.utils.error_handler import ErrorHandler
 
 class Embedder:
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):

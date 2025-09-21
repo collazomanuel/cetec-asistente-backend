@@ -16,8 +16,32 @@ from qdrant_client.models import (
 )
 from app.utils.logger import Logger
 from app.utils.error_handler import ErrorHandler
-from app.utils.tracer import Tracer
-from app.utils.embeddings.embedder import Embedder
+
+# Simple Embedder class to avoid import issues
+class SimpleEmbedder:
+    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+        try:
+            from transformers import AutoTokenizer, AutoModel
+            import torch
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+            self.model = AutoModel.from_pretrained(model_name)
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.model.to(self.device)
+        except ImportError:
+            raise ImportError("Please install transformers and torch: pip install transformers torch")
+
+    def generate(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
+        import torch
+        embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i+batch_size]
+            inputs = self.tokenizer(batch, return_tensors="pt", padding=True, truncation=True, max_length=512)
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+            batch_embeddings = outputs.last_hidden_state[:, 0, :].cpu().numpy()
+            embeddings.extend(batch_embeddings.tolist())
+        return embeddings
 
 
 class QdrantStore:
@@ -37,7 +61,7 @@ class QdrantStore:
         self.api_key = api_key
         self.collection_name = collection_name
         self.client = AsyncQdrantClient(url=self.url, api_key=self.api_key)
-        self.embedder = Embedder()  # single model in RAM
+        self.embedder = SimpleEmbedder()  # single model in RAM
         self.logger.info(f"Qdrant client ready for '{self.collection_name}'")
 
     # ----------------------- Setup -----------------------
@@ -108,7 +132,6 @@ class QdrantStore:
           - topics: list[str] (optional)
         """
         try:
-            tracer = Tracer().get_tracer()
             buf: List[PointStruct] = []
 
             async def _flush():
@@ -199,51 +222,48 @@ class QdrantStore:
         """
         import math
 
-        tracer = Tracer().get_tracer()
-        with tracer.start_as_current_span("QdrantStore.search") as span:
-            try:
-                # 1) Embed query
-                qv = self.embedder.generate([query])[0]
-                if hasattr(qv, "tolist"):
-                    qv = qv.tolist()
+        try:
+            # 1) Embed query
+            qv = self.embedder.generate([query])[0]
+            if hasattr(qv, "tolist"):
+                qv = qv.tolist()
 
-                # 2) Build filter
-                flt = self._build_filter(subject=subject, topics_any=topics_any, doc_ids_any=doc_ids_any)
+            # 2) Build filter
+            flt = self._build_filter(subject=subject, topics_any=topics_any, doc_ids_any=doc_ids_any)
 
-                # 3) Search
-                hits = await self.client.search(
-                    collection_name=self.collection_name,
-                    query_vector=qv,
-                    query_filter=flt,
-                    limit=top_k,
+            # 3) Search
+            hits = await self.client.search(
+                collection_name=self.collection_name,
+                query_vector=qv,
+                query_filter=flt,
+                limit=top_k,
+            )
+
+            # 4) Post-filter by score threshold (if provided)
+            results: List[Dict[str, Any]] = []
+            for h in hits:
+                if score_threshold is not None and (h.score is None or h.score < score_threshold):
+                    continue
+                payload = h.payload or {}
+                results.append(
+                    {
+                        "score": round(h.score, 6) if h.score is not None else None,
+                        "subject": payload.get("subject"),
+                        "topics": payload.get("topics"),
+                        "s3_uri": payload.get("s3_uri"),
+                        "doc_id": payload.get("doc_id"),
+                        "page": payload.get("page"),
+                        "chunk_id": payload.get("chunk_id"),
+                        "title": payload.get("title"),
+                        "text": payload.get("text"),
+                        "point_id": getattr(h, "id", None),
+                    }
                 )
 
-                # 4) Post-filter by score threshold (if provided)
-                results: List[Dict[str, Any]] = []
-                for h in hits:
-                    if score_threshold is not None and (h.score is None or h.score < score_threshold):
-                        continue
-                    payload = h.payload or {}
-                    results.append(
-                        {
-                            "score": round(h.score, 6) if h.score is not None else None,
-                            "subject": payload.get("subject"),
-                            "topics": payload.get("topics"),
-                            "s3_uri": payload.get("s3_uri"),
-                            "doc_id": payload.get("doc_id"),
-                            "page": payload.get("page"),
-                            "chunk_id": payload.get("chunk_id"),
-                            "title": payload.get("title"),
-                            "text": payload.get("text"),
-                            "point_id": getattr(h, "id", None),
-                        }
-                    )
-
-                span.set_attribute("result_count", len(results))
-                return results
-            except Exception as e:
-                self.error_handler.handle(e, context="QdrantStore.search")
-                return []
+            return results
+        except Exception as e:
+            self.error_handler.handle(e, context="QdrantStore.search")
+            return []
 
     def _build_filter(
         self,
