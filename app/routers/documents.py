@@ -73,6 +73,8 @@ async def delete_document(
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
 
+# NOTE: Below are two untested endpoints for presigned uploads
+# They require frontend integration to fully test
 
 @router.post("/subjects/{subject_slug}/uploads/presign", response_model=UploadPresignResponse, tags=["Documents"])
 async def presign_uploads(

@@ -4,6 +4,7 @@ from datetime import datetime
 import boto3
 from botocore.config import Config
 from fastapi import UploadFile
+from fastapi import HTTPException
 from app.models.auth import User
 from app.models.documents import (
     Document, DocumentsResponse, UploadRequest, UploadPresignResponse,
@@ -198,6 +199,12 @@ class DocumentService:
         user: User
     ) -> Document:
         """Upload file directly to S3 and create document record"""
+
+        # Check if subject exists
+        subject = await self.db["subjects"].find_one({"slug": subject_slug})
+        if not subject:
+            raise HTTPException(status_code=404, detail="Subject not found")
+
         # Generate unique document ID and S3 key
         doc_id = str(uuid4())
         s3_key = f"docentes/{subject_slug}/{doc_id}_{file.filename}"
