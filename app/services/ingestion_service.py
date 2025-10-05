@@ -50,13 +50,30 @@ class IngestionService:
         self.logger.debug(f"IngestionRequest: mode={ingestion_request.mode}, doc_ids={ingestion_request.doc_ids}, options={getattr(ingestion_request, 'options', None)}")
         job_id = str(uuid4())
         
-        # Count documents to process
-        docs_query = {"subject_slug": subject_slug, "status": DocumentStatus.UPLOADED.value}
-        if ingestion_request.mode == IngestionMode.SELECTED and ingestion_request.doc_ids:
-            docs_query["_id"] = {"$in": ingestion_request.doc_ids}
+        # Count documents to process and provide diagnostic info
+        if ingestion_request.mode == IngestionMode.NEW:
+            docs_query = {"subject_slug": subject_slug, "status": DocumentStatus.UPLOADED.value}
+        elif ingestion_request.mode == IngestionMode.SELECTED and ingestion_request.doc_ids:
+            docs_query = {"subject_slug": subject_slug, "status": DocumentStatus.UPLOADED.value, "_id": {"$in": ingestion_request.doc_ids}}
+        elif ingestion_request.mode == IngestionMode.ALL:
+            docs_query = {"subject_slug": subject_slug, "status": {"$in": [DocumentStatus.UPLOADED.value, DocumentStatus.INGESTED.value]}}
+        elif ingestion_request.mode == IngestionMode.REINGEST:
+            docs_query = {"subject_slug": subject_slug, "status": DocumentStatus.INGESTED.value}
+        else:
+            # Default to NEW mode
+            docs_query = {"subject_slug": subject_slug, "status": DocumentStatus.UPLOADED.value}
+            
         self.logger.debug(f"MongoDB docs_query: {docs_query}")
         docs_total = await self.documents_collection.count_documents(docs_query)
         self.logger.info(f"Total documents to ingest: {docs_total}")
+        
+        # Log diagnostic information about document statuses
+        total_docs = await self.documents_collection.count_documents({"subject_slug": subject_slug})
+        uploaded_docs = await self.documents_collection.count_documents({"subject_slug": subject_slug, "status": DocumentStatus.UPLOADED.value})
+        ingested_docs = await self.documents_collection.count_documents({"subject_slug": subject_slug, "status": DocumentStatus.INGESTED.value})
+        failed_docs = await self.documents_collection.count_documents({"subject_slug": subject_slug, "status": DocumentStatus.FAILED.value})
+        
+        self.logger.info(f"Subject '{subject_slug}' document status summary: Total={total_docs}, Uploaded={uploaded_docs}, Ingested={ingested_docs}, Failed={failed_docs}")
         
         # Create job record
         job_doc = {
@@ -96,12 +113,14 @@ class IngestionService:
         user: User
     ) -> List[IngestionJob]:
         """Get ingestion jobs for a subject"""
+        self.logger.info(f"Getting ingestion jobs for subject {subject_slug} for user {user.id}")
         cursor = self.collection.find(
             {"subject_slug": subject_slug}
         ).sort("created_at", -1)
         
         jobs = []
         async for doc in cursor:
+            self.logger.debug(f"Found job {doc['_id']}: status={doc['status']}, docs_total={doc['docs_total']}")
             job = IngestionJob(
                 job_id=str(doc["_id"]),
                 subject_slug=doc["subject_slug"],
@@ -113,6 +132,7 @@ class IngestionService:
             )
             jobs.append(job)
         
+        self.logger.info(f"Returning {len(jobs)} jobs for subject {subject_slug}")
         return jobs
 
     async def get_ingestion_job(
@@ -121,10 +141,14 @@ class IngestionService:
         user: User
     ) -> Optional[IngestionJob]:
         """Get a specific ingestion job"""
+        self.logger.info(f"Getting ingestion job {job_id} for user {user.id}")
         doc = await self.collection.find_one({"_id": job_id})
         
         if not doc:
+            self.logger.warning(f"Ingestion job {job_id} not found in database")
             return None
+        
+        self.logger.info(f"Found job {job_id}: status={doc['status']}, docs_total={doc['docs_total']}, docs_done={doc['docs_done']}, vectors={doc['vectors']}")
         
         return IngestionJob(
             job_id=str(doc["_id"]),
@@ -173,7 +197,10 @@ class IngestionService:
             docs_processed = 0
             total_vectors = 0
             
+            # Check if there are any documents to process
+            has_documents = False
             async for doc in cursor:
+                has_documents = True
                 try:
                     self.logger.info(f"[Job {job_id}] Processing document {doc['_id']}: {doc['filename']}")
                     
@@ -261,6 +288,10 @@ class IngestionService:
                         {"$set": {"status": DocumentStatus.FAILED.value}}
                     )
                     docs_processed += 1
+            
+            # Handle case where no documents were found
+            if not has_documents:
+                self.logger.info(f"[Job {job_id}] No documents found matching query. All documents may already be ingested.")
             
             # Update job status to completed
             self.logger.info(f"[Job {job_id}] COMPLETED: {docs_processed} docs, {total_vectors} vectors.")

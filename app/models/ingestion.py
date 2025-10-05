@@ -4,8 +4,10 @@ from datetime import datetime
 from enum import Enum
 
 class IngestionMode(str, Enum):
-    NEW = "new"
-    SELECTED = "selected"
+    NEW = "new"  # Only process documents with 'uploaded' status
+    SELECTED = "selected"  # Only process specific document IDs with 'uploaded' status 
+    ALL = "all"  # Process all documents regardless of status
+    REINGEST = "reingest"  # Re-process already ingested documents
 
 class IngestionOptions(BaseModel):
     chunk_size: int = 1000
