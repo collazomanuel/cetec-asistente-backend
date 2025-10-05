@@ -67,11 +67,14 @@ async def delete_document(
     current_user: User = Depends(get_current_teacher_or_admin),
     db=Depends(get_database)
 ):
-    """Delete document from S3 and purge vectors"""
+    """Delete document from S3, database, and purge all associated vectors from Qdrant"""
     document_service = DocumentService(db)
     success = await document_service.delete_document(subject_slug, doc_id, current_user)
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
+    
+
+
 
 # NOTE: Below are two untested endpoints for presigned uploads
 # They require frontend integration to fully test

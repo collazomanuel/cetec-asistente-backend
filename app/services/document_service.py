@@ -10,18 +10,28 @@ from app.models.documents import (
     Document, DocumentsResponse, UploadRequest, UploadPresignResponse,
     UploadCompleteRequest, DocumentStatus, UploadInfo
 )
+from app.utils.qdrant_client import QdrantStore
+from app.utils.logger import Logger
 from app.core.config import settings
 
 class DocumentService:
     def __init__(self, db):
         self.db = db
         self.collection = db["documents"]
+        self.logger = Logger()
         self.s3_client = boto3.client(
             's3',
             aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=settings.AWS_SECRET_KEY,
             region_name=settings.AWS_REGION,
             config=Config(signature_version='s3v4')
+        )
+        
+        # Initialize Qdrant store for vector cleanup
+        self.qdrant_store = QdrantStore(
+            url=settings.QDRANT_URL,
+            api_key=settings.QDRANT_API_KEY,
+            collection_name=settings.QDRANT_COLLECTION_NAME or "academia_docs"
         )
 
     async def get_documents(
@@ -164,7 +174,7 @@ class DocumentService:
         doc_id: str,
         user: User
     ) -> bool:
-        """Delete document from database and S3"""
+        """Delete document from database, S3, and vector store"""
         # Get document first to get S3 key
         doc = await self.collection.find_one({
             "_id": doc_id,
@@ -174,21 +184,36 @@ class DocumentService:
         if not doc:
             return False
         
+        # Delete from vector store first (most important for RAG consistency)
+        try:
+            self.logger.info(f"Deleting vectors for document {doc_id} from Qdrant")
+            deleted_count = await self.qdrant_store.delete_by_doc(doc_id)
+            self.logger.info(f"Deleted {deleted_count} vector chunks for document {doc_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to delete vectors for document {doc_id}: {str(e)}")
+            # Continue with other deletions even if vector cleanup fails
+        
         # Delete from S3
         try:
             self.s3_client.delete_object(
                 Bucket=settings.S3_BUCKET,
                 Key=doc["s3_key"]
             )
-        except Exception:
-            # Log error, but continue with database deletion
-            pass
+            self.logger.info(f"Deleted S3 object: {doc['s3_key']}")
+        except Exception as e:
+            self.logger.error(f"Failed to delete S3 object {doc['s3_key']}: {str(e)}")
+            # Continue with database deletion even if S3 deletion fails
         
         # Delete from database
         result = await self.collection.delete_one({
             "_id": doc_id,
             "subject_slug": subject_slug
         })
+        
+        if result.deleted_count > 0:
+            self.logger.info(f"Successfully deleted document {doc_id} from database")
+        else:
+            self.logger.warning(f"Document {doc_id} was not found in database during deletion")
         
         return result.deleted_count > 0
 

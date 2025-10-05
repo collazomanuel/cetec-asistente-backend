@@ -294,15 +294,26 @@ class QdrantStore:
         Returns the number of points deleted (best-effort: based on Qdrant response).
         """
         try:
+            # First, count how many points we're about to delete for logging
+            count_filter = Filter(
+                must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
+            )
+            count_result = await self.client.count(
+                collection_name=self.collection_name,
+                count_filter=count_filter,
+                exact=False  # Approximate count is fine for logging
+            )
+            estimated_count = count_result.count if hasattr(count_result, 'count') else 0
+            
+            # Perform the deletion
             res = await self.client.delete(
                 collection_name=self.collection_name,
-                points_selector=Filter(
-                    must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))]
-                ),
+                points_selector=count_filter,
             )
-            # Qdrant's delete returns an operation result; not always a count—log success
-            self.logger.info(f"Delete by doc_id='{doc_id}' acknowledged: {res.status}")
-            return 0
+            
+            # Log the operation result
+            self.logger.info(f"Delete by doc_id='{doc_id}' acknowledged: {res.status}, estimated {estimated_count} points")
+            return estimated_count
         except Exception as e:
             self.error_handler.handle(e, context="QdrantStore.delete_by_doc")
             return 0
